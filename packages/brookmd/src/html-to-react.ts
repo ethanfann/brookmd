@@ -36,6 +36,9 @@ const VOID = new Set([
   "link", "meta", "param", "source", "track", "wbr",
 ]);
 
+const TABLE_STRUCTURAL_PARENTS = new Set(["table", "thead", "tbody", "tfoot", "tr"]);
+const HTML_WHITESPACE_ONLY = /^[\t\n\f\r ]*$/;
+
 // Attribute name → React prop name, for the handful that differ. Anything not
 // listed passes through verbatim (React forwards data-*/aria-* and lowercase
 // attributes unchanged).
@@ -398,6 +401,13 @@ function nodesToReact(
   for (let idx = 0; idx < nodes.length; idx++) {
     const n = nodes[idx];
     if (n.kind === "text") {
+      // The core's line-oriented tables contain formatting whitespace that
+      // React rejects under structural table tags. Filter only here, leaving
+      // the tokenizer lossless and cell content / Unicode whitespace intact.
+      if (
+        TABLE_STRUCTURAL_PARENTS.has(ancestors[ancestors.length - 1]?.toLowerCase() ?? "") &&
+        HTML_WHITESPACE_ONLY.test(n.text)
+      ) continue;
       if (ctx && ctx.decorators) {
         pushDecoratedText(out, n.text, ctx.decorators, ancestors, keyPrefix + idx);
       } else {

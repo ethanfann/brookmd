@@ -14,6 +14,10 @@ import type { Block, Components } from "../src/types";
 
 const render = (node: unknown) => renderToStaticMarkup(node as ReactElement);
 
+// Matches the core's line-oriented GFM table serialization.
+const TABLE_HTML = '<table>\n<thead>\n<tr>\n<th>A</th>\n<th>B</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>1</td>\n<td><a href="/docs">docs</a></td>\n</tr>\n</tbody>\n</table>';
+const COMPACT_TABLE_HTML = '<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td><a href="/docs">docs</a></td></tr></tbody></table>';
+
 beforeEach(() => resetParseCount());
 
 // ---------------------------------------------------------------------------
@@ -50,6 +54,51 @@ test("converts a style string into a React style object", () => {
   // text-align style on a table cell survives the round-trip.
   const html = '<table><thead><tr><th style="text-align:left">H</th></tr></thead></table>';
   expect(render(htmlToReact(html, {}))).toContain('style="text-align:left"');
+});
+
+test("omits formatting whitespace under table structural elements", () => {
+  expect(render(htmlToReact(TABLE_HTML, {}))).toBe(COMPACT_TABLE_HTML);
+});
+
+test("omits only decoded ASCII HTML whitespace under each table structural parent", () => {
+  for (const tag of ["table", "thead", "tbody", "tfoot", "tr"]) {
+    const html = `<${tag}>\t\n\f\r &#9;&#10;&#12;&#13;&#32;</${tag}>`;
+    expect(render(htmlToReact(html, {}))).toBe(`<${tag}></${tag}>`);
+  }
+});
+
+test("the public tokenizer still preserves table formatting whitespace", () => {
+  expect(parseTrustedHtml("<table>\n<thead>&#10;</thead>\n</table>")).toEqual([
+    {
+      kind: "el", tag: "table", attrs: {}, children: [
+        { kind: "text", text: "\n" },
+        { kind: "el", tag: "thead", attrs: {}, children: [{ kind: "text", text: "\n" }] },
+        { kind: "text", text: "\n" },
+      ],
+    },
+  ]);
+});
+
+test("preserves whitespace inside cells, nested code, pre, and outside tables", () => {
+  const html = " \n<table>\n<thead>\n<tr>\n<th> \n<code> \n </code>\n </th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td> \n<pre> \n<code> x\n  y </code>\n </pre>\n </td>\n</tr>\n</tbody>\n</table>\n<pre> \n </pre>\n ";
+  expect(render(htmlToReact(html, {}))).toBe(
+    " \n<table><thead><tr><th> \n<code> \n </code>\n </th></tr></thead><tbody><tr><td> \n<pre> \n<code> x\n  y </code>\n </pre>\n </td></tr></tbody></table>\n<pre> \n </pre>\n ",
+  );
+});
+
+test("preserves Unicode whitespace and malformed non-whitespace text under table parents", () => {
+  for (const tag of ["table", "thead", "tbody", "tfoot", "tr"]) {
+    for (const text of [" \n\u00a0 ", " \u2003\n", "\t\v ", " \nnot a cell\n "]) {
+      const html = `<${tag}>${text}</${tag}>`;
+      expect(render(htmlToReact(html, {}))).toBe(html);
+    }
+    expect(render(htmlToReact(`<${tag}>&#160;&#xA0;</${tag}>`, {})))
+      .toBe(`<${tag}>\u00a0\u00a0</${tag}>`);
+  }
+});
+
+test("compact table HTML is unchanged", () => {
+  expect(render(htmlToReact(COMPACT_TABLE_HTML, {}))).toBe(COMPACT_TABLE_HTML);
 });
 
 test("renders a task-list checkbox uncontrolled (no onChange warning)", () => {
@@ -162,6 +211,38 @@ test("no components prop → byte-identical innerHTML wrapper, parser untouched"
 test("empty components object also takes the fast path", () => {
   render(createElement(BrookMarkdown, { client: fakeClient([para("<p>hi</p>")]), components: {} }));
   expect(getParseCount()).toBe(0);
+});
+
+test("completed table without transforms keeps byte-exact HTML and bypasses the walker", () => {
+  const b = block({ kind: { type: "Table" }, html: TABLE_HTML });
+  const out = render(createElement(BrookMarkdown, { client: fakeClient([b]) }));
+  expect(out).toBe(`<div class="brook-md"><div class="brook-block brook-block-table">${TABLE_HTML}</div></div>`);
+  expect(getParseCount()).toBe(0);
+});
+
+test("completed table + urlTransform omits structural whitespace and transforms cell links", () => {
+  const b = block({ kind: { type: "Table" }, html: TABLE_HTML });
+  const urls: string[] = [];
+  const out = render(createElement(BrookMarkdown, {
+    client: fakeClient([b]),
+    urlTransform: (url) => {
+      urls.push(url);
+      return "/proxy" + url;
+    },
+  }));
+  expect(out).toBe(`<div class="brook-md"><div class="brook-block brook-block-table">${COMPACT_TABLE_HTML.replace('href="/docs"', 'href="/proxy/docs"')}</div></div>`);
+  expect(urls).toEqual(["/docs"]);
+  expect(getParseCount()).toBe(1);
+});
+
+test("completed table + tag-level components omits structural whitespace and applies overrides", () => {
+  const b = block({ kind: { type: "Table" }, html: TABLE_HTML });
+  const out = render(createElement(BrookMarkdown, {
+    client: fakeClient([b]),
+    components: { table: (p: any) => createElement("table", { ...p, className: "custom" }) },
+  }));
+  expect(out).toBe(`<div class="brook-md"><div class="brook-block brook-block-table">${COMPACT_TABLE_HTML.replace("<table>", '<table class="custom">')}</div></div>`);
+  expect(getParseCount()).toBe(1);
 });
 
 test("closed block + components → override applied via parser (parsed once)", () => {
